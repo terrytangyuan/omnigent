@@ -485,6 +485,7 @@ class ConversationStore(ABC):
         include_archived: bool = False,
         project: str | None = None,
         title: str | None = None,
+        label: str | None = None,
     ) -> PagedList[Conversation]:
         """
         List conversations with cursor-based pagination.
@@ -585,6 +586,9 @@ class ConversationStore(ABC):
             Powers the ``(agent, title)`` child-session lookup in
             ``sys_session_send`` so the server can resolve the target
             in a single indexed query instead of fetching all children.
+        :param label: When set, only return conversations that have
+            a ``user.label`` entry in ``conversation_labels`` whose
+            value matches exactly. ``None`` disables the filter.
         :returns: A :class:`PagedList` of :class:`Conversation`
             objects.
         """

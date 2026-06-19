@@ -1703,6 +1703,7 @@ class SqlAlchemyConversationStore(ConversationStore):
         include_archived: bool = False,
         project: str | None = None,
         title: str | None = None,
+        label: str | None = None,
     ) -> PagedList[Conversation]:
         """
         List conversations with cursor-based pagination.
@@ -1757,6 +1758,9 @@ class SqlAlchemyConversationStore(ConversationStore):
             (an ``owner``-level grant) — stricter than ``accessible_by``,
             which also matches sessions merely shared with them. Powers
             the per-project folder fetch. ``None`` disables the filter.
+        :param label: When set, only return conversations that have
+            a ``user.label`` entry in ``conversation_labels`` whose
+            value matches exactly. ``None`` disables the filter.
         :returns: A :class:`PagedList` of :class:`Conversation`
             objects.
         """
@@ -1810,6 +1814,15 @@ class SqlAlchemyConversationStore(ConversationStore):
                     SqlSessionPermission.level >= LEVEL_OWNER,
                 )
                 stmt = stmt.where(SqlConversation.id.in_(owned_ids))
+            if label is not None:
+                stmt = stmt.where(
+                    SqlConversation.id.in_(
+                        select(SqlConversationLabel.conversation_id).where(
+                            SqlConversationLabel.key == "user.label",
+                            SqlConversationLabel.value == label,
+                        )
+                    )
+                )
             if search_query:
                 pattern = f"%{search_query.lower()}%"
                 title_match = func.lower(SqlConversation.title).like(pattern)
