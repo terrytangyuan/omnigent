@@ -579,79 +579,73 @@ export function Sidebar({ open, onClose, dragProgress = null, onOpenSearch }: Si
                 onExit={exitSelectionMode}
               />
             ) : (
-              <div className="relative mt-3 flex items-center gap-1.5">
-                {/* "Search" opens the command palette (⌘K), which searches both
-                    session titles and chat content. It replaces the old inline
-                    filter box — the palette is the single search surface now.
-                    The `group` scope reveals the ⌘K badge on hover/focus. */}
-                <button
-                  type="button"
-                  onClick={() => onOpenSearch?.()}
-                  aria-label="Search"
-                  data-testid="sidebar-search-button"
-                  className="group relative flex min-h-8 flex-1 items-center rounded-full border border-input pr-2 pl-8 text-left text-sm text-muted-foreground transition hover:bg-muted focus-visible:outline-1"
-                >
-                  <SearchIcon className="-translate-y-1/2 pointer-events-none absolute top-1/2 left-2.5 size-3.5" />
-                  <span className="flex-1 truncate">Search</span>
-                  {/* ⌘K hint — hidden until the button is hovered / focused,
-                      mirroring the sidebar's other hover-revealed affordances. */}
-                  <kbd className="ml-2 hidden shrink-0 items-center rounded-md border border-border bg-muted px-1.5 py-0.5 font-sans text-[10px] font-medium text-muted-foreground transition-opacity group-hover:inline-flex group-focus-visible:inline-flex">
-                    {MOD_KEY}K
-                  </kbd>
-                </button>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon-sm"
-                      aria-label="Select sessions"
-                      data-testid="toggle-selection-mode"
-                      className="shrink-0 rounded-full"
-                      onClick={() => setSelectionMode(true)}
-                    >
-                      <ListChecksIcon className="size-3.5" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom">Select sessions</TooltipContent>
-                </Tooltip>
-              </div>
+              <>
+                <div className="relative mt-3 flex items-center gap-1.5">
+                  <div className="relative flex-1">
+                    <SearchIcon className="-translate-y-1/2 pointer-events-none absolute top-1/2 left-2.5 size-3.5 text-muted-foreground" />
+                    <input
+                      type="search"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      aria-label="Search sessions"
+                      placeholder="Search sessions"
+                      className="min-h-8 w-full rounded-full border border-input pr-3 pl-8 text-sm transition placeholder:text-muted-foreground focus-visible:outline-1 md:select-text"
+                    />
+                  </div>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label="Select sessions"
+                        data-testid="toggle-selection-mode"
+                        className="shrink-0 rounded-full"
+                        onClick={() => setSelectionMode(true)}
+                      >
+                        <ListChecksIcon className="size-3.5" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">Select sessions</TooltipContent>
+                  </Tooltip>
+                </div>
+                {(knownLabels.length > 0 || labelFilter) && (
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {labelFilter && (
+                      <button
+                        type="button"
+                        onClick={() => setLabelFilter(undefined)}
+                        className="inline-flex h-6 items-center gap-1 rounded-full bg-muted px-2 text-xs text-muted-foreground hover:bg-muted/80"
+                      >
+                        <XIcon className="size-3" />
+                        Clear filter
+                      </button>
+                    )}
+                    {knownLabels.map((l) => {
+                      const colors = labelColor(l);
+                      const isActive = labelFilter === l;
+                      return (
+                        <button
+                          key={l}
+                          type="button"
+                          onClick={() => setLabelFilter(isActive ? undefined : l)}
+                          className={cn(
+                            "inline-flex h-6 items-center gap-1 rounded-full px-2 text-xs font-medium transition-all",
+                            colors.bg,
+                            colors.text,
+                            isActive && "ring-2 ring-current ring-offset-1 ring-offset-background",
+                          )}
+                        >
+                          <TagIcon className="size-3" />
+                          {l}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
             )}
           </div>
-          {(knownLabels.length > 0 || labelFilter) && (
-            <div className="mt-2 flex flex-wrap gap-1 px-3">
-              {labelFilter && (
-                <button
-                  type="button"
-                  onClick={() => setLabelFilter(undefined)}
-                  className="inline-flex h-6 items-center gap-1 rounded-full bg-muted px-2 text-xs text-muted-foreground hover:bg-muted/80"
-                >
-                  <XIcon className="size-3" />
-                  Clear filter
-                </button>
-              )}
-              {knownLabels.map((l) => {
-                const colors = labelColor(l);
-                const isActive = labelFilter === l;
-                return (
-                  <button
-                    key={l}
-                    type="button"
-                    onClick={() => setLabelFilter(isActive ? undefined : l)}
-                    className={cn(
-                      "inline-flex h-6 items-center gap-1 rounded-full px-2 text-xs font-medium transition-all",
-                      colors.bg,
-                      colors.text,
-                      isActive && "ring-2 ring-current ring-offset-1 ring-offset-background",
-                    )}
-                  >
-                    <TagIcon className="size-3" />
-                    {l}
-                  </button>
-                );
-              })}
-            </div>
-          )}
 
           {/* Session-scope tabs: split the viewer's own sessions ("My
           sessions") from ones shared with them ("Shared with me"). Sits above
@@ -2646,26 +2640,24 @@ function ConversationRow({
       {/* Row 2: label + git branch subtitles. */}
       {(getUserLabel(conversation) || gitBranch !== null) && (
         <span className="flex items-center gap-1.5 font-normal text-xs">
-          {getUserLabel(conversation) && (() => {
-            const userLabel = getUserLabel(conversation)!;
-            const colors = labelColor(userLabel);
-            return (
-              <span
-                className={cn(
-                  "inline-flex items-center gap-0.5 rounded-full px-1.5 py-0 text-[10px] font-medium leading-4",
-                  colors.bg,
-                  colors.text,
-                )}
-              >
-                {userLabel}
-              </span>
-            );
-          })()}
+          {getUserLabel(conversation) &&
+            (() => {
+              const userLabel = getUserLabel(conversation)!;
+              const colors = labelColor(userLabel);
+              return (
+                <span
+                  className={cn(
+                    "inline-flex items-center gap-0.5 rounded-full px-1.5 py-0 text-[10px] font-medium leading-4",
+                    colors.bg,
+                    colors.text,
+                  )}
+                >
+                  {userLabel}
+                </span>
+              );
+            })()}
           {gitBranch !== null && (
-            <span
-              className="flex items-center gap-1 text-muted-foreground"
-              title={gitBranch}
-            >
+            <span className="flex items-center gap-1 text-muted-foreground" title={gitBranch}>
               <GitBranchIcon className="size-3 shrink-0" />
               <span className="truncate">{gitBranch}</span>
             </span>
