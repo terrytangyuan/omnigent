@@ -3098,17 +3098,15 @@ function hasCommittedItem(blocks: AnyBlock[], itemId: string): boolean {
  * the consumed message triggered.  Insert just before its first block
  * so the walker emits ``[user_bubble, assistant_bubble]``.
  */
-function insertUserBlock(blocks: AnyBlock[], userBlock: UserMessageBlock, activeResponseId: string | undefined): AnyBlock[] {
+function insertUserBlock(
+  blocks: AnyBlock[],
+  userBlock: UserMessageBlock,
+  activeResponseId: string | undefined,
+): AnyBlock[] {
   if (activeResponseId) {
-    const firstIdx = blocks.findIndex(
-      (b) => b.ctx.responseId === activeResponseId,
-    );
+    const firstIdx = blocks.findIndex((b) => b.ctx.responseId === activeResponseId);
     if (firstIdx >= 0) {
-      return [
-        ...blocks.slice(0, firstIdx),
-        userBlock,
-        ...blocks.slice(firstIdx),
-      ];
+      return [...blocks.slice(0, firstIdx), userBlock, ...blocks.slice(firstIdx)];
     }
   }
   return [...blocks, userBlock];
