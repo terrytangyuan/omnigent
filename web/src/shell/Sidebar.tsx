@@ -2957,7 +2957,7 @@ function ConversationRow({
         open={labelPopoverOpen}
         onOpenChange={setLabelPopoverOpen}
         currentLabel={getUserLabel(conversation)}
-        suggestions={knownLabels}
+        suggestions={knownLabels ?? []}
         onSetLabel={(newLabel) => {
           setLabel.mutate({ id: conversation.id, label: newLabel });
           setLabelPopoverOpen(false);
