@@ -2981,20 +2981,15 @@ function LabelPopover({
   onSetLabel: (label: string | null) => void;
 }) {
   const [value, setValue] = useState(currentLabel ?? "");
-  const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (open) {
       setValue(currentLabel ?? "");
-      setTimeout(() => {
-        inputRef.current?.focus();
-        inputRef.current?.select();
-      }, 0);
     }
   }, [open, currentLabel]);
 
   function handleSubmit() {
-    const trimmed = value.trim();
+    const trimmed = value.trim().slice(0, 50);
     onSetLabel(trimmed || null);
   }
 
@@ -3010,9 +3005,10 @@ function LabelPopover({
           <DialogDescription>Add a label to organize this session.</DialogDescription>
         </DialogHeader>
         <input
-          ref={inputRef}
+          autoFocus
           type="text"
           value={value}
+          maxLength={50}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
