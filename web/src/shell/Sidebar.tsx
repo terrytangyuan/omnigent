@@ -7,6 +7,7 @@ import {
   type RefObject,
   useCallback,
   useEffect,
+  useDeferredValue,
   useMemo,
   useRef,
   useState,
@@ -131,7 +132,6 @@ import { useResizableSidebar } from "@/hooks/useResizableSidebar";
 import { useSessionSwitchHotkey } from "@/hooks/useSessionSwitchHotkey";
 import { usePinnedSessionHotkeys } from "@/hooks/usePinnedSessionHotkeys";
 import { absoluteTime, relativeTime } from "@/lib/relativeTime";
-import { MOD_KEY } from "@/components/KeyboardShortcutsDialog";
 import { isCurrentServerLocal } from "@/lib/serverOrigin";
 import { SettingsSidebarBody, useSettingsRoute, useTrackSettingsReturn } from "./settingsNav";
 import {
@@ -263,7 +263,7 @@ function showArchivedToast() {
   showToast(<ArchivedToast />);
 }
 
-export function Sidebar({ open, onClose, dragProgress = null, onOpenSearch }: SidebarProps) {
+export function Sidebar({ open, onClose, dragProgress = null }: SidebarProps) {
   const [pinnedConversationIds, setPinnedConversationIds] = useState(readPinnedConversationIds);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -278,6 +278,8 @@ export function Sidebar({ open, onClose, dragProgress = null, onOpenSearch }: Si
   // and always show the viewer's own sessions there.
   const multiUser = !isCurrentServerLocal();
   const [labelFilter, setLabelFilter] = useState<string | undefined>(undefined);
+  const [searchQuery, setSearchQuery] = useState("");
+  const debouncedSearchQuery = useDeferredValue(searchQuery);
 
   const lastSelectedIdRef = useRef<string | null>(null);
   const getVisibleIdsRef = useRef<() => string[]>(() => []);
@@ -682,7 +684,7 @@ export function Sidebar({ open, onClose, dragProgress = null, onOpenSearch }: Si
               conversationsQuery={conversationsQuery}
               scrollContainerRef={scrollContainerRef}
               onRowClick={onNavClick}
-              searchQuery=""
+              searchQuery={searchQuery}
               activeTab={multiUser ? activeTab : "mine"}
               pinnedConversationIds={pinnedConversationIds}
               onPinnedConversationIdsChange={setPinnedConversationIds}
