@@ -53,7 +53,7 @@ def test_numeric_chord_jumps_to_pinned_session(
 
 def test_bracket_chord_toggles_left_sidebar(page: Page, live_server: str) -> None:
     page.goto(live_server)
-    expect(page.get_by_test_id("sidebar-search-button")).to_be_visible(timeout=30_000)
+    expect(page.get_by_role("searchbox", name="Search sessions")).to_be_visible(timeout=30_000)
     expanded_width = page.evaluate(_SIDEBAR_WIDTH_JS)
     assert expanded_width > 100, f"sidebar unexpectedly narrow at start ({expanded_width}px)"
 

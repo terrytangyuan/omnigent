@@ -62,6 +62,7 @@ vi.mock("@/hooks/useConversations", () => ({
   usePinnedConversationBackfill: () => [],
   useRenameConversation: () => ({ mutate: vi.fn() }),
   useStopSession: () => ({ mutate: vi.fn() }),
+  useSetSessionLabel: () => ({ mutate: vi.fn() }),
   useProjects: () => ({ data: projectsMock }),
   useProjectSessions: (project: string, enabled: boolean) => {
     const override = projectSessionsMock.current[project];

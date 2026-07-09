@@ -214,15 +214,11 @@ describe("Sidebar session list", () => {
     ]);
   });
 
-  it("opens the command palette when the Search button is clicked", () => {
+  it("renders an inline search input for filtering sessions", () => {
     mockConversations(THREE_TYPE_CONVERSATIONS);
-    const onOpenSearch = vi.fn();
-    renderSidebar(true, "/", onOpenSearch);
+    renderSidebar(true, "/");
 
-    // Session search moved into the command palette: the sidebar box is now a
-    // button that opens it rather than an inline filter input.
-    fireEvent.click(screen.getByTestId("sidebar-search-button"));
-    expect(onOpenSearch).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("searchbox", { name: /search sessions/i })).toBeInTheDocument();
   });
 
   it("swaps the card content to the settings section nav on /settings", () => {
@@ -231,7 +227,7 @@ describe("Sidebar session list", () => {
 
     // The same card now shows the settings nav (Back to app + sections),
     // not the conversation search/list.
-    expect(screen.queryByTestId("sidebar-search-button")).toBeNull();
+    expect(screen.queryByRole("searchbox", { name: /search sessions/i })).toBeNull();
     expect(screen.getByRole("link", { name: /Back to Omnigent/ })).toHaveAttribute("href", "/");
     expect(screen.getByTestId("settings-nav-appearance")).toHaveAttribute(
       "href",
