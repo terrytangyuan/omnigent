@@ -260,8 +260,12 @@ export function ForkSessionForm({
   // Group the switch targets like the new-session picker: built-ins first,
   // then a divider, then custom agents — each sorted into display order.
   const { builtins: builtinSwitchable, customs: customSwitchable } = useMemo(
-    () => partitionAgentsByKind(switchableAgents),
-    [switchableAgents],
+    () =>
+      partitionAgentsByKind(
+        switchableAgents,
+        allHosts.find((h) => h.host_id === selectedHostId)?.configured_harnesses,
+      ),
+    [switchableAgents, allHosts, selectedHostId],
   );
 
   const switching = agentChoice !== SAME_AS_SOURCE;

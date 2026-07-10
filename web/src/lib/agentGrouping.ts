@@ -5,7 +5,7 @@
  * two surfaces group and order agents identically.
  */
 import type { AvailableAgent } from "@/hooks/useAvailableAgents";
-import { nativeAgentSortRank } from "@/lib/nativeCodingAgents";
+import { nativeCodingAgentForAvailableAgent } from "@/lib/nativeCodingAgents";
 
 // Built-in agents (by name slug) — the long-lived agents the server ships
 // out of the box. Pickers group these first, then a divider, then custom
@@ -50,18 +50,52 @@ function displayRank(name: string): number {
 }
 
 /**
- * Sort agents into the picker's canonical order: native coding agents by
- * their sort rank first, then by {@link AGENT_DISPLAY_ORDER}. Stable, so
- * unranked names keep their incoming (server / scan) relative order.
+ * Whether a harness is configured on a host, given the host's readiness map.
+ * `true`/non-empty-string means ready; `false`/known-failure-string means not.
+ * Unknown harnesses (absent from the map) are treated as configured so they
+ * sort with the available group rather than falsely demoted.
+ */
+function isHarnessConfigured(
+  harness: string | null | undefined,
+  configuredHarnesses: Record<string, boolean | string> | null | undefined,
+): boolean {
+  if (!harness || !configuredHarnesses) return true;
+  const v = configuredHarnesses[harness];
+  if (v === undefined) return true;
+  if (v === false) return false;
+  if (v === "binary-missing" || v === "needs-auth" || v === "unconfigured") return false;
+  return true;
+}
+
+/**
+ * Sort agents into the picker's canonical order. When a host's
+ * `configured_harnesses` map is provided, configured harnesses sort before
+ * unconfigured ones; within each group agents sort alphabetically by
+ * display name. Non-native agents (which have no harness readiness) keep
+ * their {@link AGENT_DISPLAY_ORDER} position.
  *
  * @param agents - Agents to sort (not mutated; a copy is returned).
+ * @param configuredHarnesses - The selected host's readiness map, if any.
  */
-export function sortAgentsForDisplay<T extends AvailableAgent>(agents: readonly T[]): T[] {
-  return [...agents].sort(
-    (a, b) =>
-      nativeAgentSortRank(a) - nativeAgentSortRank(b) ||
-      displayRank(a.display_name) - displayRank(b.display_name),
-  );
+export function sortAgentsForDisplay<T extends AvailableAgent>(
+  agents: readonly T[],
+  configuredHarnesses?: Record<string, boolean | string> | null,
+): T[] {
+  return [...agents].sort((a, b) => {
+    const aNative = nativeCodingAgentForAvailableAgent(a);
+    const bNative = nativeCodingAgentForAvailableAgent(b);
+
+    // Non-native agents sort after native ones, in display-order.
+    if (!aNative && !bNative) return displayRank(a.display_name) - displayRank(b.display_name);
+    if (!aNative) return 1;
+    if (!bNative) return -1;
+
+    // Both native: configured before unconfigured, then alphabetical.
+    const aConfigured = isHarnessConfigured(a.harness, configuredHarnesses);
+    const bConfigured = isHarnessConfigured(b.harness, configuredHarnesses);
+    if (aConfigured !== bConfigured) return aConfigured ? -1 : 1;
+    return a.display_name.localeCompare(b.display_name);
+  });
 }
 
 /**
@@ -75,8 +109,9 @@ export function sortAgentsForDisplay<T extends AvailableAgent>(agents: readonly 
  */
 export function partitionAgentsByKind<T extends AvailableAgent>(
   agents: readonly T[],
+  configuredHarnesses?: Record<string, boolean | string> | null,
 ): { builtins: T[]; customs: T[] } {
-  const sorted = sortAgentsForDisplay(agents);
+  const sorted = sortAgentsForDisplay(agents, configuredHarnesses);
   return {
     builtins: sorted.filter((a) => BUILTIN_AGENTS.has(a.name)),
     customs: sorted.filter((a) => !BUILTIN_AGENTS.has(a.name)),

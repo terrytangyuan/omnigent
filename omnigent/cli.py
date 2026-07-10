@@ -11538,9 +11538,17 @@ def _run_configure_harnesses_interactive() -> None:
         )
         return rows
 
+    def _harness_sort_key(row: tuple[str, str, str, str, str]) -> tuple[int, str]:
+        target, name, _status, kind, _hint = row
+        if target.startswith(_ACP_AGENT_PREFIX) or target == _ACP_ADD:
+            return (2, name.lower())
+        if kind == "ready":
+            return (0, name.lower())
+        return (1, name.lower())
+
     while True:
         config = _load_global_config()
-        harness_rows = build_harness_rows()
+        harness_rows = sorted(build_harness_rows(), key=_harness_sort_key)
         # Place the status in a single column a fixed gutter right of the names,
         # so every ✓/✗ glyph lines up vertically (the earlier right-aligned
         # status scattered the glyphs and read as messy). The name column is the
