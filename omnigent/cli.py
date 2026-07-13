@@ -2935,6 +2935,12 @@ def _assert_server_port_bindable(host: str, port: int) -> None:
     "machine-global so `server` and `run` share one admin]",
 )
 @click.option(
+    "--conversation-database-uri",
+    default=None,
+    help="Database URI for the Agent Platform tables (conversations, items, labels). "
+    "Defaults to --database-uri when not set (single-DB mode).",
+)
+@click.option(
     "--artifact-location",
     default=None,
     help="Path for artifact storage.  [default: <data-dir>/artifacts]",
@@ -2990,6 +2996,7 @@ def server(
     host: str,
     port: int,
     database_uri: str | None,
+    conversation_database_uri: str | None,
     artifact_location: str | None,
     config_path: str | None,
     execution_timeout: int | None,
@@ -3150,6 +3157,7 @@ def server(
     # CLI args take precedence over config file, which takes precedence
     # over defaults.
     db_uri = database_uri or cfg.get("database_uri", _default_db_uri())
+    conv_db_uri = conversation_database_uri or cfg.get("conversation_database_uri", None)
     art_loc = artifact_location or cfg.get("artifact_location", _default_artifact_location())
 
     # Resolve relative artifact location against config file's directory
@@ -3164,9 +3172,9 @@ def server(
 
     from omnigent.stores.permission_store.sqlalchemy_store import SqlAlchemyPermissionStore
 
-    agent_store = SqlAlchemyAgentStore(db_uri)
+    agent_store = SqlAlchemyAgentStore(db_uri, conv_db_uri)
     file_store = SqlAlchemyFileStore(db_uri)
-    conversation_store = SqlAlchemyConversationStore(db_uri)
+    conversation_store = SqlAlchemyConversationStore(db_uri, conv_db_uri)
     comment_store = SqlAlchemyCommentStore(db_uri)
     policy_store = SqlAlchemyPolicyStore(db_uri)
     permission_store = SqlAlchemyPermissionStore(db_uri)
