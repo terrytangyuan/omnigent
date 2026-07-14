@@ -154,7 +154,9 @@ from omnigent.server.auth import (
     LEVEL_READ,
     RESERVED_USER_PUBLIC,
     AuthProvider,
+    SharingMode,
     local_single_user_enabled,
+    workspace_sharing_blocked,
 )
 from omnigent.server.bundles import bundle_location, validate_agent_bundle
 from omnigent.server.host_registry import HostConnection, HostRegistry, RunnerExitReports
@@ -212,6 +214,7 @@ from omnigent.server.schemas import (
     ErrorDetail,
     ErrorEvent,
     GrantPermissionRequest,
+    McpServerStartup,
     MCPServerSummary,
     ModelUsage,
     OutputItemDoneEvent,
@@ -241,6 +244,7 @@ from omnigent.server.schemas import (
     SessionLabelsResponse,
     SessionList,
     SessionListItem,
+    SessionMcpStartupEvent,
     SessionModelEvent,
     SessionModelOptionsEvent,
     SessionReasoningEffortEvent,
@@ -401,6 +405,17 @@ _EXTERNAL_STATUS_ASSISTANT_SCAN_LIMIT: int = 1000
 _EXTERNAL_COMPACTION_STATUS_TYPE: str = "external_compaction_status"
 _EXTERNAL_COMPACTION_STATUS_VALUES: frozenset[str] = frozenset(
     {"in_progress", "completed", "failed"}
+)
+
+# Per-MCP-server startup progress observed by a native forwarder while
+# its harness boots MCP servers (codex-native today). Republished as a
+# ``session.mcp_startup`` SSE event so the web UI shows which servers
+# are still starting — instead of an apparently hung session — and
+# which failed or were cancelled. Payload:
+# ``{"servers": {"safe": {"status": "starting", "error": null}}}``.
+_EXTERNAL_MCP_STARTUP_TYPE: str = "external_mcp_startup"
+_EXTERNAL_MCP_STARTUP_STATUS_VALUES: frozenset[str] = frozenset(
+    {"starting", "ready", "failed", "cancelled"}
 )
 
 # Usage update from a terminal-backed runtime (claude-native
@@ -844,6 +859,7 @@ _ALLOWED_EVENT_TYPES: frozenset[str] = frozenset(ITEM_TYPE_TO_DATA_CLS.keys()) |
     _EXTERNAL_SESSION_STATUS_TYPE,
     _EXTERNAL_SESSION_USAGE_TYPE,
     _EXTERNAL_COMPACTION_STATUS_TYPE,
+    _EXTERNAL_MCP_STARTUP_TYPE,
     _EXTERNAL_MODEL_CHANGE_TYPE,
     _EXTERNAL_REASONING_EFFORT_CHANGE_TYPE,
     _EXTERNAL_SESSION_TODOS_TYPE,
@@ -1064,6 +1080,13 @@ _session_terminal_pending_cache: dict[str, bool] = {}
 # ManagedLaunchTracker — so a reload after a dead launch still shows
 # why the sandbox never came up.
 _session_sandbox_status_cache: dict[str, SandboxStatus] = {}
+# Per-MCP-server startup state keyed by session id. Written by
+# _publish_mcp_startup as the native forwarder reports harness MCP
+# startup progress; read by _build_session_response to populate the
+# ``mcp_startup`` snapshot field so a client opening (or reloading) the
+# session mid-startup still sees the startup band. Evicted when the
+# forwarder posts an empty/settled map — absent == no startup state.
+_session_mcp_startup_cache: dict[str, dict[str, McpServerStartup]] = {}
 # Per-session runner-skills cache + in-flight fetch. The snapshot fetches
 # these off its critical path (see _fetch_runner_skills) so the continuous
 # poll can't pin the runner's event loop and wedge a turn.
@@ -2005,6 +2028,42 @@ def _session_status_with_child_rollup(
     return own_status
 
 
+async def _best_effort_stop(
+    session_id: str,
+    conversation_store: ConversationStore,
+    runner_router: Any,
+) -> None:
+    """Stop a running session before a destructive lifecycle action.
+
+    Mirrors the client-side stop-then-archive/delete pattern: if the
+    session (or any direct sub-agent child) is still running, attempt to
+    stop it via the runner. Failures are swallowed so the caller can
+    always proceed — the session must remain deletable/archivable even
+    when the runner is offline or unreachable.
+
+    :param session_id: Session/conversation identifier.
+    :param conversation_store: Store for child-id lookup.
+    :param runner_router: The ``RunnerRouter`` for runner-client
+        resolution, or ``None`` in tests / in-process setups.
+    """
+    try:
+        child_ids_map = await asyncio.to_thread(
+            conversation_store.list_child_conversation_ids_by_parent,
+            [session_id],
+        )
+        child_ids = child_ids_map.get(session_id, [])
+        status = _session_status_with_child_rollup(session_id, child_ids)
+        if status != "running":
+            return
+        await _stop_session_via_runner(session_id, runner_router)
+    except Exception:  # noqa: BLE001 — best-effort; must not block archive/delete
+        _logger.debug(
+            "Best-effort stop failed for %s; proceeding anyway",
+            session_id,
+            exc_info=True,
+        )
+
+
 @dataclass(frozen=True)
 class SessionLiveness:
     """
@@ -2136,6 +2195,9 @@ def _build_session_list_item(
         ),
         viewer_last_seen=viewer_last_seen,
         viewer_unread=viewer_unread,
+        # Transient; set by the store only on a content search. The WS
+        # push-stream path leaves it None (no query in flight there).
+        search_snippet=conv.search_snippet,
     )
 
 
@@ -2570,6 +2632,9 @@ def _build_session_response(
         # once the launch succeeds; a failed launch is retained with
         # its reason. Populated by _publish_sandbox_status.
         sandbox_status=_session_sandbox_status_cache.get(conv.id),
+        # Replay harness MCP-server startup state (codex-native) so a
+        # client opening the session mid-startup sees the startup band.
+        mcp_startup=_session_mcp_startup_cache.get(conv.id),
         # In-flight turn id so a mid-turn reconnect can reopen a streaming
         # ``activeResponse`` (the turn-start ``running`` edge that carried it
         # is not replayed on the SSE stream). Populated for native-terminal
@@ -4053,6 +4118,15 @@ async def _resolve_elicitation(
                 result=pre_resolved,
             )
             _prune_pre_resolved_harness_elicitations()
+    # Wake a currently-parked long-poll via resolved_elsewhere, not only its
+    # Future: setting the Future alone races the sever/re-park cycle and the
+    # ASK-gated call hangs. Set the event directly; the signal helper's
+    # parked-is-None branch would clobber the verdict-carrying tombstone.
+    if isinstance(elicitation_id, str) and elicitation_id:
+        _parked = _harness_parked_elicitations.get(elicitation_id)
+        if _parked is not None and _harness_elicitation_owners.get(elicitation_id) == session_id:
+            _parked.resolved_elsewhere.set()
+
     # Fan-out for every other subscribed client (other tabs, REPL
     # TUI). Idempotent vs. the runner's own ``wait_for_user_approval``
     # finally / harness hook finally — those also publish for the id.
@@ -5704,6 +5778,37 @@ def _publish_sandbox_status(session_id: str, stage: str, error: str | None = Non
         conversation_id=session_id,
         stage=stage,
         error=error,
+    )
+    session_stream.publish(session_id, event.model_dump())
+
+
+def _publish_mcp_startup(session_id: str, servers: dict[str, McpServerStartup]) -> None:
+    """
+    Publish a typed :class:`SessionMcpStartupEvent` to the live stream.
+
+    Fired when a native forwarder reports harness MCP-server startup
+    progress via ``external_mcp_startup``, so the web UI can show
+    per-server startup state while the harness boots instead of an
+    apparently hung session. Also updates the snapshot cache so a client
+    opening the session mid-startup seeds the band from the snapshot's
+    ``mcp_startup`` field; a map with nothing left to show — empty, or
+    every server ``ready`` — evicts the cache entry, mirroring the web
+    store's all-ready clear so a reloading client never seeds a band
+    that renders nothing.
+
+    :param session_id: Session/conversation identifier,
+        e.g. ``"conv_abc123"``.
+    :param servers: Latest per-server startup map, e.g.
+        ``{"safe": McpServerStartup(status="starting", error=None)}``.
+    """
+    if any(record.status != "ready" for record in servers.values()):
+        _session_mcp_startup_cache[session_id] = servers
+    else:
+        _session_mcp_startup_cache.pop(session_id, None)
+    event = SessionMcpStartupEvent(
+        type="session.mcp_startup",
+        conversation_id=session_id,
+        servers=servers,
     )
     session_stream.publish(session_id, event.model_dump())
 
@@ -14822,7 +14927,14 @@ def create_sessions_router(
         # ``permission_level === null`` full-access sentinel in the web sidebar
         # is never tripped by a streamed null. The GET list endpoint keeps
         # exclude_none — it replaces whole pages, so it has nothing to clear.
-        return [item.model_dump() for item in items]
+        #
+        # search_snippet is excluded: it is search-only (populated just by
+        # GET /v1/sessions?search_query=), so this no-query path always has it
+        # None. Dumping it as an explicit null would overwrite a snippet the
+        # search response put in the client cache, making the palette's match
+        # preview flicker away on the next stream tick. Omitting the key leaves
+        # the cached snippet untouched.
+        return [item.model_dump(exclude={"search_snippet"}) for item in items]
 
     @router.websocket("/sessions/updates")
     async def session_updates(websocket: WebSocket) -> None:
@@ -15129,6 +15241,8 @@ def create_sessions_router(
         await _require_access(
             user_id, session_id, required_level, permission_store, conversation_store
         )
+        if body.archived is True:
+            await _best_effort_stop(session_id, conversation_store, runner_router)
         if body.runner_id is not None and permission_store is not None:
             if not check_session_access(
                 user_id, session_id, LEVEL_OWNER, permission_store, conversation_store
@@ -18779,6 +18893,7 @@ def create_sessions_router(
             _EXTERNAL_SESSION_STATUS_TYPE,
             _EXTERNAL_SESSION_USAGE_TYPE,
             _EXTERNAL_COMPACTION_STATUS_TYPE,
+            _EXTERNAL_MCP_STARTUP_TYPE,
             _EXTERNAL_MODEL_CHANGE_TYPE,
             _EXTERNAL_REASONING_EFFORT_CHANGE_TYPE,
             _EXTERNAL_SESSION_TODOS_TYPE,
@@ -19292,6 +19407,40 @@ def create_sessions_router(
                 _publish_compaction_completed(session_id, None)
             else:
                 _publish_compaction_failed(session_id)
+            return {"queued": False}
+        if body.type == _EXTERNAL_MCP_STARTUP_TYPE:
+            # Harness MCP-server startup progress (codex-native forwarder):
+            # republish as a ``session.mcp_startup`` SSE so the web UI shows
+            # per-server startup state while the harness boots. Malformed
+            # entries are rejected at the boundary — a bogus map would only
+            # strand the UI's startup band.
+            raw_servers = body.data.get("servers")
+            if not isinstance(raw_servers, dict):
+                raise OmnigentError(
+                    "external_mcp_startup requires data.servers to be an object "
+                    f"mapping server names to startup records; got {raw_servers!r}",
+                    code=ErrorCode.INVALID_INPUT,
+                )
+            mcp_servers: dict[str, McpServerStartup] = {}
+            for server_name, record in raw_servers.items():
+                record_status = record.get("status") if isinstance(record, dict) else None
+                if not (
+                    isinstance(server_name, str)
+                    and server_name
+                    and record_status in _EXTERNAL_MCP_STARTUP_STATUS_VALUES
+                ):
+                    raise OmnigentError(
+                        "external_mcp_startup server records require a status in "
+                        f"{sorted(_EXTERNAL_MCP_STARTUP_STATUS_VALUES)}; got "
+                        f"{server_name!r}: {record!r}",
+                        code=ErrorCode.INVALID_INPUT,
+                    )
+                record_error = record.get("error")
+                mcp_servers[server_name] = McpServerStartup(
+                    status=record_status,
+                    error=record_error if isinstance(record_error, str) and record_error else None,
+                )
+            _publish_mcp_startup(session_id, mcp_servers)
             return {"queued": False}
         if body.type == _EXTERNAL_SESSION_USAGE_TYPE:
             # Persist the harness-reported cumulative usage so the
@@ -19918,6 +20067,7 @@ def create_sessions_router(
                 "Session not found",
                 code=ErrorCode.NOT_FOUND,
             )
+        await _best_effort_stop(session_id, conversation_store, runner_router)
         # Runner-side resource cleanup is best-effort: if the bound
         # runner is offline or unbound, the session must still be
         # deletable. Server-owned records (files and conversation row
@@ -19987,6 +20137,10 @@ def create_sessions_router(
         # failed-launch session would leak one entry for the process
         # lifetime.
         _session_sandbox_status_cache.pop(session_id, None)
+        # Same for MCP startup state: failed/cancelled maps are retained
+        # for reload visibility while the session exists, so a session
+        # whose MCP startup never settled clean would leak its entry.
+        _session_mcp_startup_cache.pop(session_id, None)
         # Drop the deleted session's per-user read-state from every user's
         # caches so they don't accumulate orphan entries for the process
         # lifetime.
@@ -20052,6 +20206,36 @@ def create_sessions_router(
         await _require_access(
             user_id, session_id, LEVEL_MANAGE, permission_store, conversation_store
         )
+        # Server-wide sharing policy gate (see SharingMode). Applied only
+        # to *new* grants — revoke/list and owner grants are unaffected.
+        # ``getattr`` default keeps a hand-built app (a router mounted without
+        # create_app, e.g. in a focused test) from AttributeError-ing; every
+        # production path sets these via create_app.
+        _sharing_mode = getattr(request.app.state, "sharing_mode", lambda: SharingMode.ON)()
+        if _sharing_mode == SharingMode.OFF:
+            raise OmnigentError(
+                "Sharing has been disabled for this Omnigent server.",
+                code=ErrorCode.FORBIDDEN,
+            )
+        # RESTRICTED_READ_ONLY blocks sharing entirely (even read) for a session
+        # whose cwd is a home dir or the filesystem root — that workspace is too
+        # broad to expose. Other sessions fall through to the read-only cap.
+        if _sharing_mode == SharingMode.RESTRICTED_READ_ONLY:
+            _conv = await asyncio.to_thread(conversation_store.get_conversation, session_id)
+            if _conv is not None and workspace_sharing_blocked(_conv.workspace):
+                raise OmnigentError(
+                    "This session's working directory (a home or root directory) "
+                    "cannot be shared on this Omnigent server.",
+                    code=ErrorCode.FORBIDDEN,
+                )
+        if (
+            _sharing_mode in (SharingMode.READ_ONLY, SharingMode.RESTRICTED_READ_ONLY)
+            and body.level > LEVEL_READ
+        ):
+            raise OmnigentError(
+                "Sharing is limited to read-only access on this Omnigent server.",
+                code=ErrorCode.FORBIDDEN,
+            )
         if permission_store is None:
             raise OmnigentError(
                 "Permissions not enabled",
@@ -20062,11 +20246,21 @@ def create_sessions_router(
                 "Cannot modify your own permissions",
                 code=ErrorCode.FORBIDDEN,
             )
-        if body.user_id == RESERVED_USER_PUBLIC and body.level > LEVEL_READ:
-            raise OmnigentError(
-                "Public access is limited to read-only (level 1)",
-                code=ErrorCode.INVALID_INPUT,
-            )
+        if body.user_id == RESERVED_USER_PUBLIC:
+            # Public-access kill switch, independent of the sharing_mode gate
+            # above (see app.state.public_sharing). Blocks the anyone-with-the
+            # -link grant while leaving user-to-user sharing intact. ``getattr``
+            # default mirrors the sharing_mode read above (hand-built apps).
+            if not getattr(request.app.state, "public_sharing", lambda: True)():
+                raise OmnigentError(
+                    "Public access has been disabled for this Omnigent server.",
+                    code=ErrorCode.FORBIDDEN,
+                )
+            if body.level > LEVEL_READ:
+                raise OmnigentError(
+                    "Public access is limited to read-only (level 1)",
+                    code=ErrorCode.INVALID_INPUT,
+                )
         existing = await asyncio.to_thread(permission_store.get, body.user_id, session_id)
         if existing is not None and existing.level == LEVEL_OWNER:
             raise OmnigentError(
