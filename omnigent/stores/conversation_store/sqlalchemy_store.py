@@ -1895,6 +1895,7 @@ class SqlAlchemyConversationStore(ConversationStore):
                 stmt = stmt.where(
                     SqlConversation.id.in_(
                         select(SqlConversationLabel.conversation_id).where(
+                            SqlConversationLabel.workspace_id == current_workspace_id(),
                             SqlConversationLabel.key == "user.label",
                             SqlConversationLabel.value == label,
                         )
