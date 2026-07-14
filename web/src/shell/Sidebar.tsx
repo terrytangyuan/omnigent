@@ -112,6 +112,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useServerInfo } from "@/lib/CapabilitiesContext";
+import { isSingleUserMode } from "@/lib/capabilities";
 import { showToast } from "@/components/ui/toast";
 import { PermissionsModal } from "@/components/PermissionsModal";
 import { SessionStateBadge } from "@/components/SessionStateBadge";
@@ -285,6 +286,7 @@ export function Sidebar({ open, onClose, dragProgress = null }: SidebarProps) {
   const lastSelectedIdRef = useRef<string | null>(null);
   const getVisibleIdsRef = useRef<() => string[]>(() => []);
   const getVisibleConversationsRef = useRef<() => Conversation[]>(() => []);
+  const [visibleConversationCount, setVisibleConversationCount] = useState(0);
 
   const toggleSelected = useCallback((id: string, shiftKey?: boolean) => {
     setSelectedIds((prev) => {
@@ -572,7 +574,8 @@ export function Sidebar({ open, onClose, dragProgress = null }: SidebarProps) {
             {selectionMode ? (
               <BulkActionBar
                 selectedIds={selectedIds}
-                allConversations={getVisibleConversationsRef.current()}
+                allConversations={loadedRows}
+                visibleCount={visibleConversationCount}
                 onSelectAll={() => selectAll(getVisibleConversationsRef.current())}
                 onDeselectAll={deselectAll}
                 onClear={deselectAll}
@@ -660,11 +663,11 @@ export function Sidebar({ open, onClose, dragProgress = null }: SidebarProps) {
                 className="w-full"
               >
                 <TabsList className="w-full">
-                  <TabsTrigger value="mine" data-testid="sidebar-tab-mine">
-                    My sessions
+                  <TabsTrigger value="mine" data-testid="sidebar-tab-mine" className="min-w-0">
+                    <span className="min-w-0 truncate">My sessions</span>
                   </TabsTrigger>
-                  <TabsTrigger value="shared" data-testid="sidebar-tab-shared">
-                    Shared with me
+                  <TabsTrigger value="shared" data-testid="sidebar-tab-shared" className="min-w-0">
+                    <span className="min-w-0 truncate">Shared with me</span>
                   </TabsTrigger>
                 </TabsList>
               </Tabs>
@@ -693,6 +696,7 @@ export function Sidebar({ open, onClose, dragProgress = null }: SidebarProps) {
               getVisibleIdsRef={getVisibleIdsRef}
               knownLabels={knownLabels}
               getVisibleConversationsRef={getVisibleConversationsRef}
+              onVisibleCountChange={setVisibleConversationCount}
             />
           </nav>
 
@@ -940,6 +944,7 @@ interface ConversationListProps {
   getVisibleIdsRef: RefObject<() => string[]>;
   knownLabels?: string[];
   getVisibleConversationsRef: RefObject<() => Conversation[]>;
+  onVisibleCountChange: (count: number) => void;
 }
 
 // permission_level null (no ACL row / legacy) or >= 4 both mean owner.
@@ -962,6 +967,7 @@ function ConversationList({
   getVisibleIdsRef,
   knownLabels,
   getVisibleConversationsRef,
+  onVisibleCountChange,
 }: ConversationListProps) {
   // All loaded conversations from the single paginated list (for pinned
   // backfill, normalization, and the flat session list).
@@ -1313,6 +1319,9 @@ function ConversationList({
       ...visible("Chats", sections.sessions),
     ].map((c) => c.id);
   }, [sections, effectiveCollapsedSections, expandedProjects]);
+  useEffect(() => {
+    onVisibleCountChange(orderedConversationIds.length);
+  }, [orderedConversationIds.length, onVisibleCountChange]);
   getVisibleConversationsRef.current = () => {
     const visible = (title: string, list: readonly Conversation[]) =>
       effectiveCollapsedSections.includes(title) ? [] : [...list];
@@ -2031,6 +2040,7 @@ function ConversationMenuItems({
   canEdit,
   canManage,
   sharingOff,
+  isSingleUser,
   canStop,
   canMarkUnread,
   currentProject,
@@ -2058,6 +2068,9 @@ function ConversationMenuItems({
   // Server-wide sharing kill switch (OMNIGENT_SHARING_MODE=off): disables the
   // Share item for everyone, independent of the per-user manage check.
   sharingOff: boolean;
+  // Single-user mode: hide the Share item entirely (no other users to share
+  // with), rather than disabling it like sharingOff does.
+  isSingleUser: boolean;
   canStop: boolean;
   // Whether "Mark as unread" applies: any row not already showing the
   // unread dot (the active thread and running sessions included).
@@ -2094,30 +2107,33 @@ function ConversationMenuItems({
           {isPinned ? "Unpin" : "Pin"}
         </C.Item>
       )}
-      {canManage && !sharingOff ? (
-        <C.Item data-testid="share-conversation" onSelect={() => setShareOpen(true)}>
-          <ShareIcon className="size-3.5" />
-          Share
-        </C.Item>
-      ) : (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <div>
-              <C.Item data-testid="share-conversation" disabled>
-                <ShareIcon className="size-3.5" />
-                Share
-              </C.Item>
-            </div>
-          </TooltipTrigger>
-          {/* Sharing-off is server-wide, so it outranks the per-user manage
-              reason when both apply. */}
-          <TooltipContent side="left">
-            {sharingOff
-              ? "Sharing has been disabled for this Omnigent server."
-              : "You need manage permissions to share this session"}
-          </TooltipContent>
-        </Tooltip>
-      )}
+      {/* Single-user mode has no other users to share with — omit the item
+          entirely rather than showing it disabled. */}
+      {!isSingleUser &&
+        (canManage && !sharingOff ? (
+          <C.Item data-testid="share-conversation" onSelect={() => setShareOpen(true)}>
+            <ShareIcon className="size-3.5" />
+            Share
+          </C.Item>
+        ) : (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div>
+                <C.Item data-testid="share-conversation" disabled>
+                  <ShareIcon className="size-3.5" />
+                  Share
+                </C.Item>
+              </div>
+            </TooltipTrigger>
+            {/* Sharing-off is server-wide, so it outranks the per-user manage
+                reason when both apply. */}
+            <TooltipContent side="left">
+              {sharingOff
+                ? "Sharing has been disabled for this Omnigent server."
+                : "You need manage permissions to share this session"}
+            </TooltipContent>
+          </Tooltip>
+        ))}
       {canEdit ? (
         <C.Item data-testid="rename-conversation" onSelect={() => setIsEditing(true)}>
           <PencilIcon className="size-3.5" />
@@ -2413,6 +2429,9 @@ function ConversationRow({
   // (share enabled) while the capability probe is still loading.
   const serverInfo = useServerInfo();
   const sharingOff = serverInfo !== "loading" && serverInfo.sharing_mode === "off";
+  // Single-user mode has no other users to share with, so the Share item is
+  // hidden entirely (not just disabled) — mirrors the header Share button.
+  const isSingleUser = isSingleUserMode(serverInfo);
   // Gates the kebab's "Stop session" item. `false` = runner known-offline
   // (already stopped — hide the destructive control); `undefined` = not yet
   // observed, don't block. Non-sticky Stop: no "Resume" affordance — the
@@ -2614,6 +2633,7 @@ function ConversationRow({
     canEdit,
     canManage,
     sharingOff,
+    isSingleUser,
     canStop,
     canMarkUnread,
     currentProject,
@@ -3531,6 +3551,7 @@ function ConversationEditRow({ initialTitle, onCommit, onCancel }: ConversationE
 function BulkActionBar({
   selectedIds,
   allConversations,
+  visibleCount,
   onSelectAll,
   onDeselectAll,
   onClear,
@@ -3538,6 +3559,7 @@ function BulkActionBar({
 }: {
   selectedIds: Set<string>;
   allConversations: Conversation[];
+  visibleCount: number;
   onSelectAll: () => void;
   onDeselectAll: () => void;
   onClear: () => void;
@@ -3572,7 +3594,7 @@ function BulkActionBar({
     ownedSelected.length > 0 && (archivedSelected.length === 0 || nonArchivedSelected.length === 0);
 
   const count = selectedIds.size;
-  const allSelected = count > 0 && count === allConversations.length;
+  const allSelected = count > 0 && count === visibleCount;
   const isBusy = bulkArchive.isPending || bulkDelete.isPending;
 
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
