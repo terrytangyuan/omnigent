@@ -20,7 +20,7 @@ from sqlalchemy import (
     text,
     update,
 )
-from sqlalchemy.orm import QueryableAttribute, Session
+from sqlalchemy.orm import QueryableAttribute, Session, aliased
 from sqlalchemy.sql.selectable import Subquery
 
 from omnigent._wrapper_labels import UI_MODE_LABEL_KEY, WRAPPER_LABEL_KEY
@@ -70,13 +70,19 @@ from omnigent.entities import (
     PagedList,
     parse_item_data,
 )
+from omnigent.session_import.models import (
+    IMPORT_EXTERNAL_SESSION_ID_LABEL_KEY,
+    IMPORT_SOURCE_LABEL_KEY,
+)
 from omnigent.stores.conversation_store import (
+    _FORK_ONLY_DROPPED_LABEL_KEYS,
     _INSTANCE_SCOPED_LABEL_KEYS,
     FORK_CARRY_HISTORY_LABEL_KEY,
     FORK_SOURCE_EXTERNAL_SESSION_LABEL_KEY,
     FORK_SOURCE_LABEL_KEY,
     PROJECT_LABEL_KEY,
     SWITCH_PREVIOUS_BUILTIN_LABEL_KEY,
+    ConversationAlreadyExistsError,
     ConversationNotFoundError,
     ConversationStore,
     CreatedSession,
@@ -818,6 +824,7 @@ class SqlAlchemyConversationStore(ConversationStore):
         workspace: str | None = None,
         git_branch: str | None = None,
         terminal_launch_args: list[str] | None = None,
+        conversation_id: str | None = None,
     ) -> Conversation:
         """
         Create a new conversation in the database.
@@ -864,12 +871,16 @@ class SqlAlchemyConversationStore(ConversationStore):
             the column NULL; a list (including ``[]``) is JSON-encoded
             so the runner applies it when it auto-launches the
             terminal.
+        :param conversation_id: Optional caller-supplied identifier.
+            ``None`` generates a new random id.
         :returns: The newly created :class:`Conversation`.
         :raises NameAlreadyExistsError: If
             ``parent_conversation_id`` is set and a sibling row
             with the same ``title`` already exists.
         :raises IntegrityError: If ``host_id`` is set without
             ``workspace`` (the check constraint catches it).
+        :raises ConversationAlreadyExistsError: If a caller-supplied
+            ``conversation_id`` is already in use.
         """
         from sqlalchemy.exc import IntegrityError
 
@@ -879,7 +890,7 @@ class SqlAlchemyConversationStore(ConversationStore):
         )
 
         now = now_epoch()
-        new_id = generate_conversation_id()
+        new_id = conversation_id if conversation_id is not None else generate_conversation_id()
         try:
             # Get parent's root from AP, then write AP row and Omnigent meta separately.
             root_id = new_id
@@ -937,6 +948,36 @@ class SqlAlchemyConversationStore(ConversationStore):
             # check, which would misclassify any future unique
             # constraint added to the conversations table.
             msg = str(exc).lower()
+            is_id_unique_violation = conversation_id is not None and (
+                "conversations_pkey" in msg
+                or "agent_configuration_pkey" in msg
+                or (
+                    "duplicate entry" in msg
+                    and (
+                        "for key 'primary'" in msg
+                        or "for key 'conversations.primary'" in msg
+                        or "for key 'agent_configuration.primary'" in msg
+                    )
+                )
+                or (
+                    "unique" in msg
+                    and (
+                        (
+                            "conversations.workspace_id" in msg
+                            and "conversations.id" in msg
+                            and "parent_conversation_id" not in msg
+                        )
+                        or (
+                            "agent_configuration.workspace_id" in msg
+                            and "agent_configuration.conversation_id" in msg
+                        )
+                    )
+                )
+            )
+            if is_id_unique_violation:
+                raise ConversationAlreadyExistsError(
+                    f"conversation id {conversation_id!r} already exists"
+                ) from exc
             is_title_unique_violation = "ix_conversations_parent_title_unique" in msg or (
                 "unique" in msg and "parent_conversation_id" in msg and "title" in msg
             )
@@ -984,6 +1025,39 @@ class SqlAlchemyConversationStore(ConversationStore):
             return _to_conversation(
                 row, meta, _fetch_labels(session, conversation_id), agent_config
             )
+
+    def find_imported_conversation(
+        self,
+        source: str,
+        external_session_id: str,
+    ) -> Conversation | None:
+        """Find the original conversation carrying an import provenance pair."""
+        source_label = aliased(SqlConversationLabel)
+        external_label = aliased(SqlConversationLabel)
+        with self._conv_session() as session:
+            conversation_id = session.execute(
+                select(SqlConversation.id)
+                .join(
+                    source_label,
+                    (source_label.workspace_id == SqlConversation.workspace_id)
+                    & (source_label.conversation_id == SqlConversation.id),
+                )
+                .join(
+                    external_label,
+                    (external_label.workspace_id == SqlConversation.workspace_id)
+                    & (external_label.conversation_id == SqlConversation.id),
+                )
+                .where(
+                    SqlConversation.workspace_id == current_workspace_id(),
+                    source_label.key == IMPORT_SOURCE_LABEL_KEY,
+                    source_label.value == source,
+                    external_label.key == IMPORT_EXTERNAL_SESSION_ID_LABEL_KEY,
+                    external_label.value == external_session_id,
+                )
+                .order_by(SqlConversation.created_at, SqlConversation.id)
+                .limit(1)
+            ).scalar_one_or_none()
+        return self.get_conversation(conversation_id) if conversation_id is not None else None
 
     def get_runner_ids(self, conversation_ids: list[str]) -> dict[str, str | None]:
         """
@@ -3166,7 +3240,7 @@ class SqlAlchemyConversationStore(ConversationStore):
             fork_labels = {
                 key: value
                 for key, value in _fetch_labels(session, source_conversation_id).items()
-                if key not in _INSTANCE_SCOPED_LABEL_KEYS
+                if key not in (_INSTANCE_SCOPED_LABEL_KEYS | _FORK_ONLY_DROPPED_LABEL_KEYS)
             }
             source_workspace = source_meta_ref.workspace if source_meta_ref else None
             source_ext_session = source_meta_ref.external_session_id if source_meta_ref else None
