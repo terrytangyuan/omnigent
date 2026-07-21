@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "omnigent"
 # Keep in sync with omnigent/version.py's VERSION constant.
-version = "0.6.0.dev0"
+version = "0.7.0.dev0"
 description = "Omnigent: declarative agent authoring and runtime framework"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -26,11 +26,13 @@ dependencies = [
     # one version, so a published `omnigent==X` must resolve the SDK wheels
     # built alongside it (release-omnigent.yml verifies these pins match the
     # release tag). Local/editable installs still resolve via tool.uv.sources.
-    "omnigent-client==0.6.0.dev0",
-    "omnigent-ui-sdk==0.6.0.dev0",
+    "omnigent-client==0.7.0.dev0",
+    "omnigent-ui-sdk==0.7.0.dev0",
     # Merged from omnigent + omnigent.
     "pyyaml>=6.0,<7",
-    "openai>=1.0,<3",
+    # openai-agents<0.18.2 omits a field required by openai>=2.45.
+    # Keep this cap until the websockets<15 compatibility pin can be lifted.
+    "openai>=1.0,<2.45",
     # >=14: the `e2b` extra's SDK (>=2.26) needs rich>=14 (was >=13,<14).
     "rich>=14,<15",
     "prompt_toolkit>=3.0,<4",
@@ -104,6 +106,11 @@ dependencies = [
     # (omnigent/api/routing/v1/routing.proto).
     # Previously only a transitive dep; declared directly now that we ship a proto.
     "protobuf>=6,<7",
+    # RFC 5545 recurrence rules for the scheduled-task scheduler
+    # (omnigent/server/scheduled/rrule.py). Imported at module top and pulled
+    # onto the core server boot path via app.py; previously only a transitive
+    # dep, declared directly now that we import it.
+    "python-dateutil>=2.8,<3",
 ]
 
 [project.optional-dependencies]
@@ -144,6 +151,11 @@ cwsandbox = ["cwsandbox>=0.24,<1"]
 # server-managed `sandbox.provider: e2b`).
 # Same lazy-import posture as above.
 e2b = ["e2b>=2.26,<3"]
+# Islo sandbox launcher (`omnigent sandbox --provider islo` and
+# server-managed `sandbox.provider: islo`). The launcher module ships in
+# the base package and imports the SDK lazily, so only users of the
+# provider need this extra.
+islo = ["islo>=0.3.5,<0.4"]
 # NVIDIA OpenShell launcher (`omnigent sandbox --provider openshell`).
 # Self-hosted gRPC gateway; the SDK pulls grpcio + protobuf. Same
 # lazy-import posture as above. Pre-1.0 SDK: pin minor.
@@ -179,7 +191,22 @@ cursor = ["cursor-sdk>=0.1.7"]
 # Hindsight long-term memory built-in tools (hindsight_retain / _recall /
 # _reflect). The tools import the client lazily, so only users who enable a
 # Hindsight memory tool need this extra.
+hindsight = ["hindsight-client>=0.4.0"]
+# Backwards-compatibility alias: this extra was renamed to `hindsight` (see
+# above) in #2605. Keep `memory` pulling the same client so existing
+# `omnigent[memory]` / `--extra memory` invocations keep working.
+# TODO(0.70): remove this `memory` alias extra — it exists only to keep the
+# pre-rename install command working during the deprecation window.
 memory = ["hindsight-client>=0.4.0"]
+# Slack integration (`omni integration slack`). The @omnigent socket-mode bot
+# lives in the separate `omnigent-slack` package (heavy deps — slack_bolt /
+# aiohttp — kept out of the baseline install). The CLI launches it as a
+# subprocess (`python -m omnigent_slack`), so it must be importable in the same
+# environment; installing `omnigent[slack]` puts it there. Local/editable
+# installs resolve it from `integrations/slack` via [tool.uv.sources] below;
+# publishing `omnigent[slack]` to an index additionally requires publishing
+# `omnigent-slack` there (not yet wired into the release pipeline).
+slack = ["omnigent-slack"]
 databricks = [
     # Floor matches what core code was tested against when the SDK was a
     # default dependency (it moved here from `dependencies` above).
@@ -188,12 +215,21 @@ databricks = [
     "psycopg[binary]>=3.1,<4",
     "pymysql>=1.1,<2",
     # Databricks-specific MCP servers. Not imported by core Omnigent
-    # code, so it is opt-in here rather than a default dependency.
-    "databricks-mcp>=0.1.0",
+    # code, so it is opt-in here rather than a default dependency. Floored
+    # at 0.9.0 (the release the lock already resolves): with the old >=0.1.0
+    # floor, a fresh install could satisfy the ai-bridge floor below by
+    # dropping mcp to 0.1.0, which pulls no mlflow/pyarrow at all.
+    "databricks-mcp>=0.9.0",
+    # Floor the transitive databricks-ai-bridge: older releases pull a
+    # databricks-vectorsearch that pins protobuf 5.x (conflicts with our
+    # protobuf>=6), so the resolver backtracks to an ai-bridge that caps
+    # mlflow at 3.2 and pyarrow<22 — and pyarrow 21 has no cp314 wheel, so a
+    # fresh install on Python 3.14 tries (and fails) to build it from source.
+    "databricks-ai-bridge>=0.19",
 ]
 dev = [
     "pytest>=7.0",
-    # hindsight-client is opt-in (the `memory` extra), but the Hindsight
+    # hindsight-client is opt-in (the `hindsight` extra), but the Hindsight
     # memory tool tests import + mock it, so keep it in the dev set.
     "hindsight-client>=0.4.0",
     "pytest-asyncio>=0.21",
@@ -277,6 +313,9 @@ omni = "omnigent.cli:main"
 [tool.uv.sources]
 omnigent-client = { path = "sdks/python-client", editable = true }
 omnigent-ui-sdk = { path = "sdks/ui", editable = true }
+# Local resolution for the `slack` extra. Only pulled in when `omnigent[slack]`
+# is requested (the extra is opt-in), so a default install never builds it.
+omnigent-slack = { path = "integrations/slack", editable = true }
 
 [tool.setuptools]
 include-package-data = true
@@ -292,6 +331,7 @@ include = ["omnigent*"]
 "omnigent.db.migrations" = ["script.py.mako"]
 "omnigent.resources.examples" = ["*.yaml", "*.sh", "debby/**/*", "polly/**/*"]
 "omnigent.resources.pi_native" = ["*.js"]
+"omnigent.resources.scripts" = ["*.sh"]
 # include UI assets in build, plus the static API-only landing page served
 # at "/" when no web UI bundle is present
 "omnigent.server" = ["static/web-ui/**/*", "static/api_only_landing.html"]
@@ -496,6 +536,14 @@ known-first-party = ["omnigent"]
 "sdks/**/*.py" = [
     "ARG001", "ARG002", "BLE001", "B008", "RUF012",
 ]
+# slack_bolt dispatches to handlers by parameter NAME (``body``, ``event``,
+# ``client``, ``ack``, ``view``), so unused handler args can't be renamed to
+# ``_`` without breaking injection. The bot also has deliberate boundary
+# catches (best-effort acks, background login tasks) that must never abort a
+# turn, hence BLE001.
+"integrations/slack/**/*.py" = [
+    "ARG001", "ARG002", "BLE001", "B008", "RUF012",
+]
 
 [tool.mypy]
 python_version = "3.12"
@@ -564,8 +612,8 @@ ignore_missing_imports = true
 module = "daytona.*"
 ignore_missing_imports = true
 
-# hindsight-client is an optional dep (the `memory` extra); the memory
-# built-in tools import it lazily so the base install never needs it.
+# hindsight-client is an optional dep (the `hindsight` extra); the
+# hindsights tools import it lazily so the base install never needs it.
 [[tool.mypy.overrides]]
 module = "hindsight_client.*"
 ignore_missing_imports = true
@@ -689,6 +737,15 @@ follow_imports = "skip"
 # via sys.modules aliasing.
 [[tool.mypy.overrides]]
 module = "omnigent_client.*"
+ignore_missing_imports = true
+disallow_any_explicit = false
+
+# Slack integration (omnigent-slack). slack_bolt / slack_sdk ship no type
+# stubs, and Slack event/view payloads are opaque JSON dicts the handlers
+# read positionally — so the code leans on ``Any`` at that boundary. Mirror
+# the client SDK: resolve the untyped imports and lift the Any ban here.
+[[tool.mypy.overrides]]
+module = "omnigent_slack.*"
 ignore_missing_imports = true
 disallow_any_explicit = false
 

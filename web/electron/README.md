@@ -562,47 +562,22 @@ _invisible_ — the passkey sheet you see in Chrome/Safari is browser chrome,
 which Electron doesn't ship. Touching the key completes the ceremony with no
 UI.
 
-For a visual flow, the shell enables Electron's **Touch ID platform
-authenticator** (`app.configureWebAuthn`, Electron ≥ 42, macOS only):
-registering or signing in with a platform passkey then shows the native
-macOS Touch ID / keychain dialog, and a native chooser appears when several
-saved passkeys match. Three pieces must agree before this activates:
+The shell intentionally does **not** enable Electron's Touch ID platform
+authenticator (`app.configureWebAuthn`). Doing so routes the entire WebAuthn
+ceremony through Apple's AuthenticationServices provider, which cannot
+complete a roaming USB security-key request (e.g. YubiKey) against a
+third-party SSO relying party — the ceremony dies with an opaque
+`NotAllowedError` ("The operation either timed out or was not allowed").
+Leaving it off keeps security keys on Chromium's built-in CTAP path, which
+handles both roaming keys and Touch-ID-as-security-key. The native Touch ID
+platform passkey served no supported sign-in path: Databricks Touch ID
+sign-in goes through Okta FastPass (Okta Verify over the localhost loopback),
+not WebAuthn, and browser-registered passkeys are invisible to the app's
+keychain-access group anyway.
 
-1. `WEBAUTHN_KEYCHAIN_ACCESS_GROUP` in `src/main.js` —
-   `"<TEAM_ID>.ai.omnigent.desktop"`.
-2. The same string in the `keychain-access-groups` entitlement in
-   `signing/entitlements.mac.plist`.
-3. An **embedded Developer ID provisioning profile**
-   (`signing/omnigent.provisionprofile`, wired via `provisioningProfile`
-   in `package.json`). `keychain-access-groups` is a _restricted_
-   entitlement: a Developer ID signature alone doesn't authorize it, and
-   AMFI SIGKILLs the app at launch ("Launchd job spawn failed", POSIX
-   error 163). Create the profile in the Apple Developer portal: an App ID
-   for `ai.omnigent.desktop` (no extra capabilities — every profile
-   automatically authorizes keychain groups under `<TEAM_ID>.*`), then
-   Profiles → Distribution → Developer ID for that App ID. Verify with
-   `security cms -D -i signing/omnigent.provisionprofile`.
-
-The signing identity's team must match the group prefix —
-`package.json` pins `"identity"` for this reason (with several certs in
-the keychain, electron-builder's auto-discovery can pick the wrong one).
-Helpers must NOT inherit the keychain entitlement
-(`entitlementsInherit` points at the minimal
-`signing/entitlements.mac.inherit.plist`; a restricted entitlement on a
-helper shows up as a "GPU process exited unexpectedly" crash loop).
-
-It only works in a **code-signed** build, on Macs with a Secure Enclave.
-Until all three are set — and always in unsigned `npm start` dev runs —
-the platform authenticator stays off and security keys remain the
-(working, silent) path.
-
-Caveats: these passkeys are device-bound in the app's own keychain access
-group — they are **not** synced via iCloud Keychain, and passkeys you saved
-in Safari/Chrome are not visible to the app (and vice versa). Showing the
-full system passkey sheet (iCloud Keychain, cross-device QR) for arbitrary
-user-chosen servers would require Apple's browser-only
-`web-browser.public-key-credential` entitlement, or per-domain associated
-domains — neither fits an app whose servers are user-deployed.
+Because no restricted entitlements are used, a Developer ID certificate
+alone is sufficient for signing — no embedded provisioning profile is
+needed.
 
 ## Localhost access (auth flows)
 
@@ -652,6 +627,59 @@ untouched and the extra connection ends when the window closes. These
 windows get the same per-window origin pinning as regular ones. With windows
 on more than one server, the dock badge shows the sum of each server's unread
 count and notification titles are prefixed with the firing server's hostname.
+
+## Deep links
+
+An `omnigent://<hostname>/c/<session_id>` URL opens that session on that
+server in the desktop app — the way a browser deep link opens a page:
+
+```
+omnigent://localhost:8000/c/conv_abc              → http://localhost:8000/c/conv_abc
+omnigent://my-workspace.cloud.databricks.com/c/x → https://…/ml/omnigents/c/x
+```
+
+The link names a server by **host** (with port if non-default) and carries no
+`http`/`https` — the shell infers the scheme with the same rule the setup page
+uses (`http` for loopback, `https` for a remote host), so a deep link and a
+pasted URL can never disagree. The Databricks workspace mount (`/ml/omnigents`)
+is **not** in the link; it is server-determined and discovered the same way a
+pasted workspace URL is. v1 accepts only `/c/<session_id>`; other paths are
+ignored.
+
+**Window handling** (the careful part):
+
+- A window already open on that server and currently on its page is **reused
+  in place** — the shell tells the SPA's router to navigate to the conversation
+  without a reload, so the in-flight stream isn't dropped. (Same basename-less
+  `/c/<id>` path a notification click routes.)
+- A window pinned to that server but mid-SSO-redirect (off the server origin)
+  is **reused with a reload** to the conversation, since the SPA's listener
+  isn't reliably mounted on a foreign IdP page.
+- A server you've **previously connected to** (in the recent-servers list or
+  the saved default) but have no live window for opens in a **new window** —
+  no prompt, the way a second tab for a known site would.
+- A server you have **never connected to** prompts with a native confirmation
+  dialog (Cancel is the default). Pinning a new origin is a privilege grant
+  (notifications, badge, mic), so a clicked link never silently pins an
+  attacker-chosen origin; once you allow it, the server is remembered so the
+  next link is frictionless.
+
+**Cold start vs warm start.** On macOS, `open-url` fires for the link and can
+arrive **before** the app is ready, so pre-ready links are queued and drained
+once the windows exist. On Windows/Linux, a second launch carrying the URL is
+funneled to the running instance by the single-instance lock. Links are
+handled one at a time, so two arriving together can't race two consent
+dialogs. At cold start the deep link replaces the default launch window; if you
+cancel an unknown-server prompt, a normal launch window opens instead.
+
+**Registration.** The scheme is registered two ways: the build manifest
+(`build.protocols` in `package.json`, which writes `CFBundleURLSchemes` on
+macOS, a `.desktop` `MimeType` on Linux, and registry entries on Windows) for
+packaged installs, plus a runtime `app.setAsDefaultProtocolClient("omnigent")`
+call so `electron .` dev clicks route to the running dev instance.
+
+The decision logic (parse + window selection) is pure and unit-tested in
+`src/deepLink.js`; the orchestration lives in `src/main.js`.
 
 ## Implementation notes
 

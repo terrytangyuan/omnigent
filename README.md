@@ -68,12 +68,38 @@ curl -fsSL https://raw.githubusercontent.com/omnigent-ai/omnigent/main/scripts/i
 ```
 
 <details>
+<summary>Optional integrations and extras</summary>
+
+Need an optional integration? Pass one or more extras to the installer:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/omnigent-ai/omnigent/main/scripts/install_oss.sh | sh -s -- --extra databricks
+curl -fsSL https://raw.githubusercontent.com/omnigent-ai/omnigent/main/scripts/install_oss.sh | sh -s -- --extra modal,e2b
+```
+
+Available user-facing extras include:
+
+- **Model providers:** `databricks`, `bedrock`, `vertex`
+- **Sandbox providers:** `modal`, `daytona`, `boxlite`, `cwsandbox`, `e2b`,
+  `openshell`, `kubernetes`
+- **SDK harnesses:** `antigravity`, `copilot`, `cursor`, `agents-sdk`
+- **Storage and memory:** `s3`, `hindsight`
+
+</details>
+
+<details>
 <summary>Prefer to install manually?</summary>
 
 Omnigent needs **Python 3.12+**. Install the `omnigent` package:
 
 ```bash
 uv tool install omnigent        # or: pip install "omnigent"
+```
+
+Manual installs use the same extras syntax, for example:
+
+```bash
+uv tool install "omnigent[databricks,modal]"
 ```
 
 Or with [Homebrew](https://github.com/omnigent-ai/homebrew-tap):
@@ -170,6 +196,41 @@ brings the server back up on the new version. Source checkouts update with
 The check queries your configured package index — honoring `UV_INDEX_URL` /
 `PIP_INDEX_URL` and your `uv.toml` / `pip.conf` (default PyPI), so private
 mirrors work out of the box; override with `OMNIGENT_INDEX_URL` if needed.
+
+</details>
+
+<details>
+<summary>Uninstalling Omnigent</summary>
+
+Preview the CLI/profile cleanup that would run by default:
+
+```bash
+omnigent uninstall
+```
+
+Remove the CLI and installer-managed PATH entries while keeping your local
+history, credentials, and projects:
+
+```bash
+omnigent uninstall --yes
+```
+
+To also remove Omnigent state under `~/.omnigent`, pass `--purge`; Omnigent
+backs it up outside the target before deletion. Your `~/omnigent` workspace is
+kept unless you explicitly add `--purge-workspace`.
+
+```bash
+omnigent uninstall --purge --yes
+```
+
+If the installed wheel is broken or `omnigent` is not on `PATH`, run the
+standalone script instead:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/omnigent-ai/omnigent/main/scripts/uninstall_oss.sh | sh
+```
+
+Add `--yes` to the standalone script to perform the previewed CLI cleanup.
 
 </details>
 
@@ -400,6 +461,52 @@ See the [policy guide](https://github.com/omnigent-ai/omnigent/blob/main/docs/PO
 
 ---
 
+## Configuration
+
+Global config lives in `~/.omnigent/config.yaml` (user) or
+`.omnigent/config.yaml` (project, takes precedence). View it with
+`omnigent config list`; set a key with `omnigent config set <key>=<value>`.
+
+### `harness:` — default harness & per-harness startup overrides
+
+Selects the default harness for `omnigent run` and can override the
+executable (`command`) and base launch args (`args`) for each harness.
+
+```yaml
+# Legacy scalar (deprecated, still honored — auto-migrates on next write):
+harness: claude-sdk
+
+# Mapping form — a default plus per-harness overrides:
+harness:
+  default: claude-sdk
+  codex-native:
+    command: /usr/local/bin/codex
+    args: [--config, approval_policy=on-request]
+  pi-native:
+    command: /opt/bin/pi
+```
+
+- `default` (optional str): default harness id for `omnigent run`.
+- `command` (optional str): overrides the vendor CLI executable.
+- `args` (optional list[str]): base args; CLI pass-through args append after.
+
+**Precedence** (first non-empty wins): `OMNIGENT_<NAME>_PATH` env var >
+config `harness.<id>.command` > built-in default. `args` follow the same
+precedence with config `args` as the base and CLI pass-through args appended.
+
+The env var is `OMNIGENT_<NAME>_PATH` where `<NAME>` is the harness's base id
+(`-native` suffix stripped, so `pi` and `pi-native` share `OMNIGENT_PI_PATH` —
+one var per binary). The legacy `HARNESS_<NAME>_PATH` (codex/pi/kimi/goose/
+qwen/hermes) is still read as a deprecated fallback (warns on use) and will be
+removed in **v0.8.0**.
+
+The pre-existing `omnigent claude --command` flag is deprecated (warns,
+pointing to `OMNIGENT_CLAUDE_PATH` / config) and will be removed in a future
+release. No other native command has a `--command` flag — override via env
+or config.
+
+---
+
 ## Write your own agent
 
 An agent is a short YAML file: your prompt, your tools — local Python
@@ -463,4 +570,3 @@ Thanks to all of our amazing contributors!
 <a href="https://github.com/omnigent-ai/omnigent/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=omnigent-ai/omnigent" />
 </a>
-
