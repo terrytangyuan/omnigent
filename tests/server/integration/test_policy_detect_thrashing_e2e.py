@@ -13,13 +13,13 @@ going through the registry allowlist — same pattern as
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Any
 
 import httpx
 import pytest
 
 from omnigent.runtime import get_caps
-from omnigent.runtime.caps import RuntimeCaps
 from omnigent.spec.types import FunctionPolicySpec, FunctionRef, PhaseSelector
 from tests.server.helpers import create_test_agent
 
@@ -58,8 +58,8 @@ def _install_thrashing_policy(
             },
         ),
     )
-    patched_caps = RuntimeCaps(
-        execution_timeout=original_caps.execution_timeout,
+    patched_caps = dataclasses.replace(
+        original_caps,
         default_policies=[policy],
     )
     monkeypatch.setattr(

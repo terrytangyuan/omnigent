@@ -447,3 +447,36 @@ class TestDetectThrashingAction:
         event = {"type": "tool_result", "data": "bare string", "session_state": {}}
         result = policy(event)
         assert result is None
+
+
+# ── robustness ──────────────────────────────────────────────────────────────
+
+
+class TestDetectThrashingRobustness:
+    def test_corrupted_history_resets_to_empty(self) -> None:
+        policy = detect_thrashing(consecutive_threshold=2)
+        event = {
+            "type": "tool_result",
+            "data": {"result": "Error: x"},
+            "session_state": {_THRASHING_HISTORY_KEY: {"bad": "data"}},
+        }
+        result = policy(event)
+        assert result["result"] == "ALLOW"
+        updates = {u["key"]: u["value"] for u in result["state_updates"]}
+        assert updates[_THRASHING_HISTORY_KEY] == [1]
+
+    def test_corrupted_history_list_of_strings_resets(self) -> None:
+        policy = detect_thrashing(consecutive_threshold=2)
+        event = {
+            "type": "tool_result",
+            "data": {"result": "Error: x"},
+            "session_state": {_THRASHING_HISTORY_KEY: ["not", "ints"]},
+        }
+        result = policy(event)
+        updates = {u["key"]: u["value"] for u in result["state_updates"]}
+        assert updates[_THRASHING_HISTORY_KEY] == [1]
+
+    def test_zero_window_does_not_divide_by_zero(self) -> None:
+        policy = detect_thrashing(consecutive_threshold=0, window=0, window_error_rate=0.5)
+        result = policy(_result_event("Error: x", history=[1, 1]))
+        assert result is not None

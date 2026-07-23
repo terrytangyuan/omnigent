@@ -397,9 +397,14 @@ def detect_thrashing(
         is_error = 1 if _looks_like_error(result_str) else 0
 
         state = event.get("session_state") or {}
-        history: list[int] = state.get(_THRASHING_HISTORY_KEY) or []
+        raw_history = state.get(_THRASHING_HISTORY_KEY)
+        if isinstance(raw_history, list) and all(isinstance(v, int) for v in raw_history):
+            history: list[int] = raw_history
+        else:
+            history = []
 
-        keep = max(window, consecutive_threshold)
+        effective_window = max(window, 1)
+        keep = max(effective_window, consecutive_threshold)
         updated = [*history, is_error][-keep:]
 
         state_update: PolicyResponse = {
@@ -428,8 +433,8 @@ def detect_thrashing(
                 }
 
         # ── Window rate check ──────────────────────────────────────
-        if window_error_rate > 0.0 and len(updated) >= window:
-            rate_window = updated[-window:]
+        if window_error_rate > 0.0 and len(updated) >= effective_window:
+            rate_window = updated[-effective_window:]
             rate = sum(rate_window) / len(rate_window)
             if rate >= window_error_rate:
                 pct = int(rate * 100)
@@ -437,7 +442,7 @@ def detect_thrashing(
                     "result": normalised_action,
                     "reason": (
                         f"The agent has a {pct}% error rate over the last "
-                        f"{window} tool calls. It may be stuck — "
+                        f"{effective_window} tool calls. It may be stuck — "
                         f"review and redirect, or start a fresh session."
                     ),
                     "state_updates": state_update["state_updates"],
