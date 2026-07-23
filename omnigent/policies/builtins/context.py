@@ -528,6 +528,7 @@ POLICY_REGISTRY: list[dict[str, Any]] = [
                 "consecutive_threshold": {
                     "type": "integer",
                     "default": 5,
+                    "minimum": 0,
                     "description": (
                         "Number of consecutive tool errors before the policy "
                         "fires. Set to 0 to disable the consecutive check. "
@@ -537,6 +538,7 @@ POLICY_REGISTRY: list[dict[str, Any]] = [
                 "window": {
                     "type": "integer",
                     "default": 10,
+                    "minimum": 1,
                     "description": (
                         "Rolling window size for the error-rate check. Defaults to 10."
                     ),
@@ -544,6 +546,8 @@ POLICY_REGISTRY: list[dict[str, Any]] = [
                 "window_error_rate": {
                     "type": "number",
                     "default": 0.8,
+                    "minimum": 0.0,
+                    "maximum": 1.0,
                     "description": (
                         "Fraction of errors within the window that triggers "
                         "the policy (0.0–1.0). Set to 0 to disable the rate "
