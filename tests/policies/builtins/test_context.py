@@ -334,12 +334,13 @@ class TestDetectThrashingSuccess:
 class TestDetectThrashingConsecutive:
     def test_below_consecutive_threshold_allows(self) -> None:
         policy = detect_thrashing(consecutive_threshold=3)
-        result = policy(_result_event("Error: x", history=[1, 1]))
-        # 3rd consecutive error but threshold is 3 → fires
-        assert result["result"] == "ASK"
+        # 2 consecutive errors (below threshold of 3) → ALLOW
+        result = policy(_result_event("Error: x", history=[1]))
+        assert result["result"] == "ALLOW"
 
     def test_at_consecutive_threshold_fires(self) -> None:
         policy = detect_thrashing(consecutive_threshold=3, action="ASK")
+        # 3rd consecutive error reaches threshold → ASK
         result = policy(_result_event("Error: oops", history=[1, 1]))
         assert result["result"] == "ASK"
         assert "3 consecutive" in result["reason"]
@@ -361,6 +362,13 @@ class TestDetectThrashingConsecutive:
         result = policy(_result_event("Error: x", history=[1, 1, 1, 1, 1]))
         assert result["result"] == "ALLOW"
 
+    def test_consecutive_works_when_window_is_smaller(self) -> None:
+        policy = detect_thrashing(consecutive_threshold=5, window=3, window_error_rate=0.0)
+        # 5th consecutive error — window=3 is smaller but history retains enough
+        result = policy(_result_event("Error: x", history=[1, 1, 1, 1]))
+        assert result["result"] == "ASK"
+        assert "5 consecutive" in result["reason"]
+
 
 # ── window error rate ────────────────────────────────────────────────────────
 
@@ -373,7 +381,7 @@ class TestDetectThrashingWindowRate:
         assert result["result"] == "ASK"
         assert "100%" in result["reason"]
 
-    def test_window_rate_allows_below_threshold(self) -> None:
+    def test_window_rate_fires_at_exact_threshold(self) -> None:
         policy = detect_thrashing(consecutive_threshold=0, window=5, window_error_rate=0.8)
         # 3 errors, 1 success + 1 error = 4/5 = 80% — exactly at threshold → fires
         result = policy(_result_event("Error: x", history=[1, 1, 0, 1]))
@@ -396,16 +404,25 @@ class TestDetectThrashingWindowRate:
         result = policy(_result_event("Error: x", history=[1, 1]))
         assert result["result"] == "ALLOW"
 
+    def test_rate_uses_window_not_full_history(self) -> None:
+        policy = detect_thrashing(consecutive_threshold=8, window=4, window_error_rate=0.75)
+        # History has 7 entries (retained because consecutive_threshold=8),
+        # but rate check should use only the last window=4 results.
+        # Last 4 of [..., 0, 0, 1, 1] + [1] = [0, 1, 1, 1] = 75% → fires
+        result = policy(_result_event("Error: x", history=[1, 1, 1, 0, 0, 1, 1]))
+        assert result["result"] == "ASK"
+        assert "4 tool calls" in result["reason"]
+
 
 # ── rolling window ───────────────────────────────────────────────────────────
 
 
 class TestDetectThrashingWindow:
     def test_window_slides(self) -> None:
-        policy = detect_thrashing(window=3)
+        policy = detect_thrashing(window=3, consecutive_threshold=3)
+        # keep = max(3, 3) = 3 → [1, 1, 1] + [0] → keep last 3 → [1, 1, 0]
         result = policy(_result_event("ok", history=[1, 1, 1]))
         updates = {u["key"]: u["value"] for u in result["state_updates"]}
-        # Window of 3: [1, 1, 1] + [0] → keep last 3 → [1, 1, 0]
         assert updates[_THRASHING_HISTORY_KEY] == [1, 1, 0]
 
     def test_state_updates_always_written(self) -> None:

@@ -338,8 +338,8 @@ def detect_thrashing(
     and flags the agent when either:
 
     - the last *consecutive_threshold* results are all errors, **or**
-    - the error rate within the last *window* results exceeds
-      *window_error_rate*.
+    - the error rate within the last *window* results reaches or
+      exceeds *window_error_rate*.
 
     On detection the policy returns *action* with a message telling
     the user the agent appears stuck.  The window is **not** reset on
@@ -399,7 +399,8 @@ def detect_thrashing(
         state = event.get("session_state") or {}
         history: list[int] = state.get(_THRASHING_HISTORY_KEY) or []
 
-        updated = [*history, is_error][-window:]
+        keep = max(window, consecutive_threshold)
+        updated = [*history, is_error][-keep:]
 
         state_update: PolicyResponse = {
             "result": "ALLOW",
@@ -428,14 +429,15 @@ def detect_thrashing(
 
         # ── Window rate check ──────────────────────────────────────
         if window_error_rate > 0.0 and len(updated) >= window:
-            rate = sum(updated) / len(updated)
+            rate_window = updated[-window:]
+            rate = sum(rate_window) / len(rate_window)
             if rate >= window_error_rate:
                 pct = int(rate * 100)
                 return {
                     "result": normalised_action,
                     "reason": (
                         f"The agent has a {pct}% error rate over the last "
-                        f"{len(updated)} tool calls. It may be stuck — "
+                        f"{window} tool calls. It may be stuck — "
                         f"review and redirect, or start a fresh session."
                     ),
                     "state_updates": state_update["state_updates"],
