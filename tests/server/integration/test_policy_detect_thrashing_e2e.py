@@ -20,7 +20,7 @@ import httpx
 import pytest
 
 from omnigent.runtime import get_caps
-from omnigent.spec.types import FunctionPolicySpec, FunctionRef, PhaseSelector
+from omnigent.spec.types import FunctionPolicySpec, FunctionRef, Phase, PhaseSelector
 from tests.server.helpers import create_test_agent
 
 pytestmark = pytest.mark.asyncio
@@ -47,7 +47,7 @@ def _install_thrashing_policy(
     original_caps = get_caps()
     policy = FunctionPolicySpec(
         name="thrashing_guard",
-        on=[PhaseSelector(phase="tool_result")],
+        on=[PhaseSelector(phase=Phase.TOOL_RESULT)],
         function=FunctionRef(
             path=_DETECT_THRASHING,
             arguments={
